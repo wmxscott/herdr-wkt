@@ -1,0 +1,516 @@
+#!/usr/bin/env zsh
+# herdr-wkt: git worktrees that open as Herdr workspaces.
+# https://github.com/wmxscott/herdr-wkt
+
+emulate -R zsh
+setopt err_exit pipe_fail
+
+VERSION=1.0.0
+PROG=${0:t}
+
+typeset -g OUT_GREEN= OUT_BLUE= OUT_YELLOW= OUT_RESET=
+typeset -g ERR_RED= ERR_YELLOW= ERR_RESET=
+if [[ -z ${NO_COLOR-} ]]; then
+    if [[ -t 1 ]]; then
+        OUT_GREEN=$'\e[32m' OUT_BLUE=$'\e[34m' OUT_YELLOW=$'\e[33m' OUT_RESET=$'\e[0m'
+    fi
+    if [[ -t 2 ]]; then
+        ERR_RED=$'\e[31m' ERR_YELLOW=$'\e[33m' ERR_RESET=$'\e[0m'
+    fi
+fi
+
+step() { print -r -- "${OUT_YELLOW}→${OUT_RESET} $*"; }
+warn() { print -ru2 -- "${ERR_YELLOW}warning:${ERR_RESET} $*"; }
+
+# die <message> [<hint>...]: runtime failure, exit 1.
+die() {
+    print -ru2 -- "${ERR_RED}error:${ERR_RESET} $1"
+    shift
+    local line
+    for line in "$@"; do print -ru2 -- "  $line"; done
+    exit 1
+}
+
+# usage_error <command> <message>: bad arguments, exit 2.
+usage_error() {
+    local cmd=$1
+    print -ru2 -- "${ERR_RED}error:${ERR_RESET} $2"
+    print -ru2 -- "Run '$PROG${cmd:+ $cmd} --help' for usage."
+    exit 2
+}
+
+usage() {
+    cat <<EOF
+Usage: $PROG <command> [options]
+
+Git worktrees that open as Herdr workspaces.
+
+Commands:
+  setup <repo-url>                Clone <repo-url> into a .bare worktree layout
+                                  in the current (empty) directory
+  new -b <branch> [-s <source>] [-n <label>]
+                                  Create or reopen the worktree for <branch>
+                                  and open it in Herdr
+  rename -b <new-branch> [-n <label>] [-y]
+                                  Rename the current worktree's branch,
+                                  directory and Herdr workspace
+
+Options:
+  -h, --help                      Show this help, or '$PROG <command> --help'
+  -V, --version                   Show the version
+
+Environment:
+  HERDR_WKT_ROOT                  Where worktrees of normal (non-.bare) repos
+                                  go (default: ~/.herdr/worktrees)
+  NO_COLOR                        Disable coloured output
+EOF
+}
+
+usage_setup() {
+    cat <<EOF
+Usage: $PROG setup <repo-url>
+
+Clone <repo-url> as a bare repository into ./.bare, point ./.git at it, and
+add a worktree for the default branch. The current directory must be empty.
+EOF
+}
+
+usage_new() {
+    cat <<EOF
+Usage: $PROG new -b <branch> [-s <source>] [-n <label>]
+
+Create the worktree for <branch>, or reuse it if it exists, and open it in
+Herdr. A new branch is created from <source> unless it already exists locally
+or on origin.
+
+Options:
+  -b <branch>   Branch to create or open; also the worktree directory name
+  -s <source>   Branch to start a new branch from (default: the repo's
+                default branch)
+  -n <label>    Herdr workspace label (default: chosen by Herdr)
+  -h, --help    Show this help
+EOF
+}
+
+usage_rename() {
+    cat <<EOF
+Usage: $PROG rename -b <new-branch> [-n <label>] [-y]
+
+Rename the current worktree's branch and directory, rename the branch on
+origin if it was pushed, and point the Herdr workspace at the new path.
+Run it from inside a linked worktree.
+
+Options:
+  -b <new-branch>  New branch name; also the new directory name
+  -n <label>       Herdr workspace label (default: the new branch name)
+  -y               Don't ask before renaming a remote branch that has an
+                   open pull request
+  -h, --help       Show this help
+EOF
+}
+
+# wants_help <args...>: true if --help appears among the arguments.
+wants_help() {
+    local arg
+    for arg in "$@"; do
+        [[ $arg == --help ]] && return 0
+    done
+    return 1
+}
+
+# Print $1 relative to $2 (both resolved to absolute paths first).
+relpath() {
+    local -a target base
+    target=("${(s:/:)${1:A}}")
+    base=("${(s:/:)${2:A}}")
+
+    local i=1
+    while [[ $i -le ${#target} && $i -le ${#base} && "${target[i]}" == "${base[i]}" ]]; do
+        (( i++ ))
+    done
+
+    local rel="" n=$(( ${#base} - i + 1 ))
+    for (( ; n > 0; n-- )); do rel+="../"; done
+    for (( ; i <= ${#target}; i++ )); do rel+="${target[i]}/"; done
+
+    rel="${rel%/}"
+    print -r -- "${rel:-.}"
+}
+
+# Replace a leading $HOME with ~ for display.
+tildify() {
+    if [[ $1 == $HOME || $1 == $HOME/* ]]; then
+        print -r -- "~${1#$HOME}"
+    else
+        print -r -- "$1"
+    fi
+}
+
+# The repo's shared git directory as an absolute path with symlinks resolved,
+# the same from the main checkout, a linked worktree or a .bare layout root.
+common_git_dir() {
+    local dir
+    dir=$(git rev-parse --git-common-dir)
+    print -r -- "${dir:A}"
+}
+
+# The repo's default branch: origin's HEAD, else a bare repo's own HEAD,
+# else main or master, whichever exists.
+detect_default_branch() {
+    local ref
+    ref=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    if [[ -n "$ref" ]]; then
+        print -r -- "${ref#origin/}"
+        return
+    fi
+    if [[ "$(git rev-parse --is-bare-repository 2>/dev/null)" == true ]] ||
+        [[ "$(git --git-dir="$(common_git_dir)" config --bool core.bare 2>/dev/null)" == true ]]; then
+        ref=$(git --git-dir="$(common_git_dir)" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+        if [[ -n "$ref" ]] && git show-ref --verify --quiet "refs/heads/$ref"; then
+            print -r -- "$ref"
+            return
+        fi
+    fi
+    if git show-ref --verify --quiet refs/remotes/origin/main || git show-ref --verify --quiet refs/heads/main; then
+        print -r -- "main"
+    elif git show-ref --verify --quiet refs/remotes/origin/master || git show-ref --verify --quiet refs/heads/master; then
+        print -r -- "master"
+    else
+        print -r -- "main"
+    fi
+}
+
+# Print the path of the worktree that has branch $1 checked out, if any.
+worktree_for_branch() {
+    local line wt=""
+    for line in "${(@f)$(git worktree list --porcelain)}"; do
+        case $line in
+            "worktree "*) wt=${line#worktree } ;;
+            "branch refs/heads/$1") print -r -- "$wt"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# True if $1 is a registered worktree of this repo.
+is_worktree() {
+    local line want=${1:A}
+    for line in "${(@f)$(git worktree list --porcelain)}"; do
+        [[ $line == "worktree "* && ${${line#worktree }:A} == $want ]] && return 0
+    done
+    return 1
+}
+
+# The root that worktrees of normal repos live under.
+worktree_root() {
+    local root=${HERDR_WKT_ROOT:-$HOME/.herdr/worktrees}
+    root=${root/#\~/$HOME}
+    [[ $root == /* ]] || die "HERDR_WKT_ROOT must be an absolute path, not '$HERDR_WKT_ROOT'."
+    print -r -- "${root%/}"
+}
+
+# herdr_open <repo-git-dir> <worktree-path> [<label>]
+# Open the worktree as a Herdr workspace. The git work is already done, so a
+# missing or unreachable Herdr only warns; the status says whether it opened.
+herdr_open() {
+    local repo_dir=$1 wt_path=$2 label=${3-}
+    local -a args=(worktree open --cwd "$repo_dir" --path "$wt_path")
+    [[ -n "$label" ]] && args+=(--label "$label")
+    args+=(--focus)
+
+    if ! command -v herdr >/dev/null 2>&1; then
+        warn "herdr not found on PATH; skipped opening the worktree in Herdr."
+        return 1
+    fi
+    local err
+    if ! err=$(herdr "${args[@]}" 2>&1 >/dev/null); then
+        local -a err_lines=("${(@f)err}")
+        warn "Herdr didn't open the worktree${err:+: ${err_lines[1]}}"
+        print -ru2 -- "  Is Herdr running? To open it by hand: herdr ${(j: :)${(@q-)args}}"
+        return 1
+    fi
+    return 0
+}
+
+cmd_setup() {
+    wants_help "$@" && { usage_setup; exit 0; }
+    [[ $# -eq 0 ]] && usage_error setup "Repo URL is required."
+    [[ $1 == -* ]] && usage_error setup "Unknown option: $1"
+    [[ $# -gt 1 ]] && usage_error setup "Unexpected argument: $2"
+    local repo_url=$1
+
+    if [[ -n "$(ls -A . 2>/dev/null)" ]]; then
+        die "Current directory is not empty." "Run '$PROG setup' in a new, empty directory."
+    fi
+
+    step "cloning $repo_url into .bare"
+    git clone --bare "$repo_url" .bare
+    print -r -- "gitdir: ./.bare" > .git
+    git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+
+    step "fetching origin"
+    git fetch origin
+    git remote set-head origin --auto >/dev/null 2>&1 || true
+
+    local default_branch
+    default_branch=$(detect_default_branch)
+
+    step "adding worktree for $default_branch"
+    git worktree add "$default_branch" "$default_branch"
+    if git show-ref --verify --quiet "refs/remotes/origin/$default_branch"; then
+        git branch --quiet --set-upstream-to="origin/$default_branch" "$default_branch" 2>/dev/null || true
+    fi
+
+    print -r -- "${OUT_GREEN}✓${OUT_RESET} .bare worktree layout ready  ${OUT_BLUE}${default_branch}${OUT_RESET}"
+}
+
+cmd_new() {
+    wants_help "$@" && { usage_new; exit 0; }
+    local new_branch="" source_branch="" label="" opt
+    local OPTIND=1 OPTARG
+    while getopts ":b:s:n:h" opt; do
+        case $opt in
+            b ) new_branch=$OPTARG ;;
+            s ) source_branch=$OPTARG ;;
+            n ) label=$OPTARG ;;
+            h ) usage_new; exit 0 ;;
+            : ) usage_error new "Option -$OPTARG needs a value." ;;
+            * ) usage_error new "Unknown option: -$OPTARG" ;;
+        esac
+    done
+    shift $(( OPTIND - 1 ))
+    [[ $# -gt 0 ]] && usage_error new "Unexpected argument: $1"
+    [[ -z "$new_branch" ]] && usage_error new "Branch name (-b) is required."
+
+    git rev-parse --git-dir >/dev/null 2>&1 || die "Not inside a Git repository."
+    git check-ref-format --branch "$new_branch" >/dev/null 2>&1 ||
+        die "'$new_branch' is not a valid branch name."
+
+    local common_dir target_path is_bare
+    common_dir=$(common_git_dir)
+
+    if [[ ${common_dir:t} == .bare ]]; then
+        # .bare layout: worktrees live next to .bare/.
+        is_bare=1
+        target_path="${common_dir:h}/${new_branch}"
+    else
+        # Normal repo: keep worktrees out of the checkout, under
+        # <root>/<org>/<repo>/<branch>, named from origin's URL.
+        is_bare=0
+        local remote_url path_part org repo
+        remote_url=$(git config --get remote.origin.url 2>/dev/null || true)
+        if [[ -n "$remote_url" ]]; then
+            path_part="${remote_url#*://}"
+            path_part="${path_part#*@}"
+            path_part="${path_part/://}"
+            path_part="${${path_part%/}%.git}"
+            org=${path_part:h:t}
+            repo=${path_part:t}
+        else
+            org="local"
+            if [[ ${common_dir:t} == .git ]]; then
+                repo=${common_dir:h:t}
+            else
+                repo=${${common_dir:t}%.git}
+            fi
+        fi
+        local root
+        root=$(worktree_root)
+        target_path="${root}/${org}/${repo}/${new_branch}"
+    fi
+
+    local existing
+    existing=$(worktree_for_branch "$new_branch" || true)
+
+    if [[ -n "$existing" ]]; then
+        target_path=$existing
+    elif [[ -d "$target_path" ]]; then
+        if ! is_worktree "$target_path"; then
+            git worktree repair "$target_path" >/dev/null 2>&1 || true
+            is_worktree "$target_path" ||
+                die "'$target_path' exists and isn't a worktree of this repo." \
+                    "Move or remove it, then try again."
+        fi
+    elif git show-ref --verify --quiet "refs/heads/$new_branch"; then
+        git worktree add "$target_path" "$new_branch" >/dev/null
+    elif git show-ref --verify --quiet "refs/remotes/origin/$new_branch"; then
+        git worktree add --track -b "$new_branch" "$target_path" "origin/$new_branch" >/dev/null
+    else
+        [[ -z "$source_branch" ]] && source_branch=$(detect_default_branch)
+
+        if git remote get-url origin >/dev/null 2>&1; then
+            step "updating $source_branch from origin"
+            git fetch origin "$source_branch" >/dev/null 2>&1 || true
+        fi
+
+        local base_ref
+        if git show-ref --verify --quiet "refs/remotes/origin/$source_branch"; then
+            base_ref="origin/$source_branch"
+        elif git rev-parse --verify --quiet "${source_branch}^{commit}" >/dev/null; then
+            base_ref=$source_branch
+        else
+            die "Source branch '$source_branch' not found locally or on origin."
+        fi
+
+        step "branching from $base_ref"
+        git worktree add --no-track -b "$new_branch" "$target_path" "$base_ref" >/dev/null
+    fi
+
+    local herdr_note=""
+    if herdr_open "$common_dir" "$target_path" "$label"; then
+        herdr_note="  ${OUT_BLUE}opened in Herdr${OUT_RESET}"
+    fi
+
+    local display_path
+    if [[ $is_bare -eq 1 ]]; then
+        display_path=$(relpath "$target_path" "$PWD")
+    else
+        display_path=$(tildify "$target_path")
+    fi
+
+    print -r -- "${OUT_GREEN}✓${OUT_RESET} ${new_branch}${label:+ ($label)}  ${display_path}${herdr_note}"
+}
+
+cmd_rename() {
+    wants_help "$@" && { usage_rename; exit 0; }
+    local new_branch="" new_label="" auto_yes=0 opt
+    local OPTIND=1 OPTARG
+    while getopts ":b:n:yh" opt; do
+        case $opt in
+            b ) new_branch=$OPTARG ;;
+            n ) new_label=$OPTARG ;;
+            y ) auto_yes=1 ;;
+            h ) usage_rename; exit 0 ;;
+            : ) usage_error rename "Option -$OPTARG needs a value." ;;
+            * ) usage_error rename "Unknown option: -$OPTARG" ;;
+        esac
+    done
+    shift $(( OPTIND - 1 ))
+    [[ $# -gt 0 ]] && usage_error rename "Unexpected argument: $1"
+    [[ -z "$new_branch" ]] && usage_error rename "New branch name (-b) is required."
+
+    [[ "$(git rev-parse --is-inside-work-tree 2>/dev/null)" == true ]] ||
+        die "Not inside a Git worktree."
+
+    local git_dir common_dir
+    git_dir=$(git rev-parse --absolute-git-dir)
+    git_dir=${git_dir:A}
+    common_dir=$(common_git_dir)
+
+    if [[ "$git_dir" == "$common_dir" ]]; then
+        die "Refusing to rename the main checkout." \
+            "Run this from inside a linked worktree created by '$PROG new'."
+    fi
+
+    local old_branch
+    old_branch=$(git branch --show-current)
+    [[ -n "$old_branch" ]] || die "Detached HEAD; nothing to rename."
+    [[ "$new_branch" != "$old_branch" ]] || die "'$new_branch' is already the current branch name."
+    git check-ref-format --branch "$new_branch" >/dev/null 2>&1 ||
+        die "'$new_branch' is not a valid branch name."
+    ! git show-ref --verify --quiet "refs/heads/$new_branch" ||
+        die "Branch '$new_branch' already exists."
+
+    # The worktree directory is named after the branch, which may contain
+    # slashes, so swap the branch suffix rather than just the last component.
+    local old_path new_path base
+    old_path=$(git rev-parse --show-toplevel)
+    old_path=${old_path:A}
+    if [[ $old_path == */$old_branch ]]; then
+        base=${old_path%/$old_branch}
+    else
+        base=${old_path:h}
+    fi
+    new_path="${base}/${new_branch}"
+
+    [[ ! -e "$new_path" ]] || die "'$new_path' already exists."
+
+    local remote_url has_remote_branch=0
+    remote_url=$(git config --get remote.origin.url 2>/dev/null || true)
+    if [[ -n "$remote_url" ]] && git show-ref --verify --quiet "refs/remotes/origin/$old_branch"; then
+        has_remote_branch=1
+    fi
+
+    if [[ $has_remote_branch -eq 1 ]]; then
+        local pr_line="" pr_number="" pr_state="" pr_url="" pr_open=0
+        if command -v gh >/dev/null 2>&1; then
+            pr_line=$(gh pr view "$old_branch" --json number,state,url --jq '[.number,.state,.url]|@tsv' 2>/dev/null || true)
+            if [[ -n "$pr_line" ]]; then
+                IFS=$'\t' read -r pr_number pr_state pr_url <<< "$pr_line"
+                [[ "$pr_state" == "OPEN" ]] && pr_open=1
+            fi
+        fi
+
+        # Neither GitHub's branch-rename API nor push+delete keeps an open PR
+        # attached to the renamed branch; GitHub closes it. Only the rename
+        # button in GitHub's web UI migrates an open PR.
+        if [[ $pr_open -eq 1 && $auto_yes -eq 0 ]]; then
+            warn "PR #$pr_number is open for '$old_branch' ($pr_url)."
+            print -ru2 -- "  Renaming the remote branch will close that PR: GitHub doesn't carry an open"
+            print -ru2 -- "  PR across a branch rename done with git or gh, so you'd need a new PR."
+            print -ru2 -- "  To keep the PR, rename the branch in GitHub's web UI instead, then run"
+            print -ru2 -- "  '$PROG rename' here to bring the local branch, directory and Herdr workspace in line."
+            print -ru2 -- "  Pass -y to rename anyway and close the PR."
+            [[ -t 0 ]] || die "No terminal to confirm; pass -y to proceed. Nothing was changed."
+            printf "  Continue anyway? [y/N] " >&2
+            local reply=""
+            read -r reply || true
+            [[ "$reply" == [yY]* ]] || die "Aborted. Nothing was changed."
+        fi
+
+        local renamed_remote=0 gh_err=""
+        if [[ "$remote_url" == *github.com* ]] && command -v gh >/dev/null 2>&1; then
+            if gh_err=$(gh api --method POST "repos/{owner}/{repo}/branches/${old_branch}/rename" -f new_name="$new_branch" 2>&1); then
+                renamed_remote=1
+                step "renamed remote branch with the GitHub API"
+            else
+                warn "GitHub's branch-rename API failed, falling back to push and delete:"
+                print -ru2 -- "  $gh_err"
+            fi
+        fi
+
+        if [[ $renamed_remote -eq 0 ]]; then
+            step "pushing '$new_branch' to origin"
+            git push origin "refs/heads/${old_branch}:refs/heads/${new_branch}"
+            step "deleting '$old_branch' from origin"
+            git push origin --delete "$old_branch"
+        fi
+
+        step "syncing remote-tracking branches"
+        git fetch --prune origin >/dev/null 2>&1 || true
+    fi
+
+    git branch -m "$old_branch" "$new_branch"
+
+    if [[ $has_remote_branch -eq 1 ]]; then
+        git branch --quiet --set-upstream-to="origin/$new_branch" "$new_branch" 2>/dev/null || true
+    fi
+
+    mkdir -p "${new_path:h}"
+    git -C "$common_dir" worktree move "$old_path" "$new_path"
+
+    # Drop directories left empty by a branch name with slashes.
+    local dir=${old_path:h}
+    while [[ $dir == $base/* ]] && rmdir "$dir" 2>/dev/null; do
+        dir=${dir:h}
+    done
+
+    local herdr_note=""
+    if herdr_open "$common_dir" "$new_path" "${new_label:-$new_branch}"; then
+        herdr_note="  ${OUT_BLUE}Herdr workspace updated${OUT_RESET}"
+    fi
+
+    print -r -- "${OUT_GREEN}✓${OUT_RESET} ${old_branch} → ${new_branch}  $(tildify "$new_path")${herdr_note}"
+    print -r -- "${OUT_YELLOW}→${OUT_RESET} your shell is still in the old directory; run: cd ${(q-)new_path}"
+}
+
+case "${1-}" in
+    setup ) shift; cmd_setup "$@" ;;
+    new ) shift; cmd_new "$@" ;;
+    rename ) shift; cmd_rename "$@" ;;
+    -h | --help | help ) usage ;;
+    -V | --version ) print -r -- "herdr-wkt $VERSION" ;;
+    "" ) usage >&2; exit 2 ;;
+    -* ) usage_error "" "Unknown option: $1" ;;
+    * ) usage_error "" "Unknown command: $1" ;;
+esac
