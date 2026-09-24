@@ -1,0 +1,2 @@
+# bats sets $stderr for `run --separate-stderr`; ShellCheck < 0.10 does not know that.
+disable=SC2154
