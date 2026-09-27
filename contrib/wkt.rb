@@ -1,23 +1,22 @@
 # Draft formula for wmxscott/homebrew-tap. Fill in url and sha256 from the
-# v1.0.0 release tarball before copying it to Formula/herdr-wkt.rb.
-class HerdrWkt < Formula
-  desc "Git worktrees that open as Herdr workspaces"
-  homepage "https://github.com/wmxscott/herdr-wkt"
-  url "https://github.com/wmxscott/herdr-wkt/archive/refs/tags/v1.0.0.tar.gz"
+# release tarball before copying it to Formula/wkt.rb.
+class Wkt < Formula
+  desc "Git worktrees in a .bare layout, opened as Herdr workspaces inside Herdr"
+  homepage "https://github.com/wmxscott/wkt"
+  url "https://github.com/wmxscott/wkt/archive/refs/tags/v2.0.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
-  head "https://github.com/wmxscott/herdr-wkt.git", branch: "main"
+  head "https://github.com/wmxscott/wkt.git", branch: "main"
 
   uses_from_macos "git"
   uses_from_macos "zsh"
 
   def install
-    bin.install "bin/herdr-wkt"
-    bin.install_symlink "herdr-wkt" => "wkt"
+    bin.install "bin/wkt"
   end
 
   test do
-    assert_match "herdr-wkt #{version}", shell_output("#{bin}/herdr-wkt --version")
+    assert_match "wkt #{version}", shell_output("#{bin}/wkt --version")
     assert_match "Usage: wkt <command>", shell_output("#{bin}/wkt --help")
 
     # Stand-in herdr, so the test never talks to a real Herdr session.
@@ -27,6 +26,7 @@ class HerdrWkt < Formula
     SH
     chmod 0755, testpath/"stub/herdr"
     ENV.prepend_path "PATH", testpath/"stub"
+    ENV["HERDR_TAB_ID"] = "test"
 
     ENV["GIT_AUTHOR_NAME"] = ENV["GIT_COMMITTER_NAME"] = "Test"
     ENV["GIT_AUTHOR_EMAIL"] = ENV["GIT_COMMITTER_EMAIL"] = "test@example.com"

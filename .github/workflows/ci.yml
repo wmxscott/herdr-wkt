@@ -16,9 +16,8 @@ jobs:
         run: bats test
       - name: Smoke test
         run: |
-          bin/herdr-wkt --version | grep -x 'herdr-wkt [0-9.]*'
-          ln -s "$PWD/bin/herdr-wkt" "$RUNNER_TEMP/wkt"
-          "$RUNNER_TEMP/wkt" --help | head -1 | grep -x 'Usage: wkt <command> \[options\]'
+          bin/wkt --version | grep -x 'wkt [0-9.]*'
+          bin/wkt --help | head -1 | grep -x 'Usage: wkt <command> \[options\]'
 
   syntax:
     runs-on: ubuntu-latest
@@ -27,11 +26,11 @@ jobs:
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install --yes zsh
       - name: zsh syntax
-        run: zsh -n bin/herdr-wkt
+        run: zsh -n bin/wkt
       - name: ShellCheck the tests
         run: shellcheck test/*.bats test/*.bash
       - name: Formula syntax
-        run: ruby -c contrib/herdr-wkt.rb
+        run: ruby -c contrib/wkt.rb
 
   secrets:
     runs-on: ubuntu-latest

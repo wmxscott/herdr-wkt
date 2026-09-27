@@ -197,31 +197,47 @@ setup() {
     [ "$(herdr_calls)" = "worktree open --cwd $CLONE/.git --path $wt --focus" ]
 }
 
-@test "normal repo: HERDR_WKT_ROOT moves the root" {
+@test "normal repo: WKT_ROOT moves the root" {
     make_clone
     cd "$CLONE"
-    HERDR_WKT_ROOT="$TMP/wt/" run wkt new -b topic
+    WKT_ROOT="$TMP/wt/" run wkt new -b topic
     [ "$status" -eq 0 ]
     [ -d "$TMP/wt/acme/widget/topic" ]
     [ ! -e "$HOME/.herdr" ]
 }
 
-@test "normal repo: HERDR_WKT_ROOT expands a leading ~" {
+@test "normal repo: WKT_ROOT expands a leading ~" {
     make_clone
     cd "$CLONE"
     # shellcheck disable=SC2088 # the literal ~ is the point
-    HERDR_WKT_ROOT="~/trees" run wkt new -b topic
+    WKT_ROOT="~/trees" run wkt new -b topic
     [ "$status" -eq 0 ]
     [ -d "$HOME/trees/acme/widget/topic" ]
 }
 
-@test "normal repo: a relative HERDR_WKT_ROOT is refused" {
+@test "normal repo: a relative WKT_ROOT is refused" {
     make_clone
     cd "$CLONE"
-    HERDR_WKT_ROOT="trees" run wkt new -b topic
+    WKT_ROOT="trees" run wkt new -b topic
+    [ "$status" -eq 1 ]
+    contains "$output" "WKT_ROOT must be an absolute path"
+    [ ! -e "$CLONE/trees" ]
+}
+
+@test "normal repo: the old HERDR_WKT_ROOT still works when WKT_ROOT is unset" {
+    make_clone
+    cd "$CLONE"
+    HERDR_WKT_ROOT="$TMP/old" run wkt new -b topic
+    [ "$status" -eq 0 ]
+    [ -d "$TMP/old/acme/widget/topic" ]
+
+    HERDR_WKT_ROOT="$TMP/old" WKT_ROOT="$TMP/new" run wkt new -b topic2
+    [ "$status" -eq 0 ]
+    [ -d "$TMP/new/acme/widget/topic2" ]
+
+    HERDR_WKT_ROOT="trees" run wkt new -b topic3
     [ "$status" -eq 1 ]
     contains "$output" "HERDR_WKT_ROOT must be an absolute path"
-    [ ! -e "$CLONE/trees" ]
 }
 
 @test "normal repo: works from inside an existing worktree" {
@@ -274,6 +290,33 @@ setup() {
 }
 
 # --- without Herdr --------------------------------------------------------
+
+@test "outside Herdr: worktree is made, herdr isn't called, no warning" {
+    unset HERDR_TAB_ID
+    make_layout
+    cd "$LAYOUT/main"
+    run --separate-stderr wkt new -b topic
+    [ "$status" -eq 0 ]
+    [ -d "$LAYOUT/topic" ]
+    lacks "$stderr" "warning"
+    [ -z "$(herdr_calls)" ]
+    [ "$(last_line)" = "✓ topic  ../topic" ]
+}
+
+@test "--no-herdr: worktree is made, herdr isn't called" {
+    make_layout
+    cd "$LAYOUT/main"
+    run --separate-stderr wkt new --no-herdr -b topic -n "Label"
+    [ "$status" -eq 0 ]
+    [ -d "$LAYOUT/topic" ]
+    lacks "$stderr" "warning"
+    [ -z "$(herdr_calls)" ]
+    [ "$(last_line)" = "✓ topic (Label)  ../topic" ]
+
+    run wkt new -b other --no-herdr
+    [ "$status" -eq 0 ]
+    [ -z "$(herdr_calls)" ]
+}
 
 @test "without herdr on PATH: worktree is made, warning, exit 0" {
     rm "$STUB_BIN/herdr"

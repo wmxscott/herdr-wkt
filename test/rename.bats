@@ -150,6 +150,24 @@ setup() {
     [ "$(git -C "$LAYOUT/topic" branch --show-current)" = topic ]
 }
 
+@test "outside Herdr: renames without calling herdr" {
+    unset HERDR_TAB_ID
+    run --separate-stderr wkt rename -b better
+    [ "$status" -eq 0 ]
+    [ -d "$LAYOUT/better" ]
+    lacks "$stderr" "warning"
+    [ -z "$(herdr_calls)" ]
+    lacks "$output" "Herdr workspace updated"
+}
+
+@test "--no-herdr: renames without calling herdr" {
+    run wkt rename --no-herdr -b better
+    [ "$status" -eq 0 ]
+    [ -d "$LAYOUT/better" ]
+    [ -z "$(herdr_calls)" ]
+    lacks "$output" "Herdr workspace updated"
+}
+
 @test "without herdr: renames, warns, exits 0" {
     rm "$STUB_BIN/herdr"
     run --separate-stderr wkt rename -b better
