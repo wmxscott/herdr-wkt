@@ -25,7 +25,7 @@ Herdr can create worktrees itself, and wkt uses Herdr's `worktree open` to show 
 - **Fresh starting point.** A new branch starts from the default branch, or `-s <source>`, after fetching it from origin, so it isn't based on a stale local copy.
 - **Reopening.** Asking again for a branch that already has a worktree, wherever it is, opens that worktree.
 - **Renaming.** Herdr has no rename for worktrees. `wkt rename` renames the branch locally and on origin, moves the directory and points the Herdr workspace at the new path.
-- **`.bare` layouts.** `wkt setup` clones a repository into a layout where every branch is a sibling folder, and `wkt new` keeps to it.
+- **`.bare` layouts.** `wkt setup` clones a repository into a layout where every branch is a sibling folder, `wkt adopt` converts a clone you already have, and `wkt new` keeps to it.
 
 ## Install
 
@@ -53,6 +53,7 @@ Herdr is optional. wkt only talks to it when run inside a Herdr pane, which it d
 wkt new -b <branch> [-s <source>] [-n <label>] [--no-herdr]
 wkt rename -b <new-branch> [-n <label>] [-y] [--no-herdr]
 wkt setup <repo-url>
+wkt adopt
 wkt --help | --version
 ```
 
@@ -115,6 +116,25 @@ widget/
 ```
 
 It configures origin to fetch every branch and sets the default branch's worktree to track origin's. It doesn't open anything in Herdr.
+
+### `wkt adopt`
+
+Run it at the top of a clone you already have to turn it into the same `.bare` layout, in place:
+
+```console
+$ cd widget
+$ wkt adopt
+→ moving the working tree aside
+→ moving .git to .bare
+→ adding worktree for main
+✓ .bare worktree layout ready  main
+```
+
+`.git` becomes `.bare`, a `.git` file points at it, and the working tree moves into a folder named after the branch you're on. The files are moved, not checked out again, so uncommitted changes, staged changes, untracked files and ignored files like `node_modules` or `.env` all come along, and `git status` in the new folder matches what it showed before. Linked worktrees you'd already made are repaired to point at `.bare`.
+
+Every path in the working tree changes, from `widget/src` to `widget/main/src`, so editors, `direnv allow`, `mise trust` and anything else that remembers absolute paths needs pointing at the new folder.
+
+It refuses a detached `HEAD`, a repository with submodules, a merge, rebase, cherry-pick, revert or bisect in progress, and anything that isn't the main checkout of a normal clone. If a step fails partway, it stops without deleting anything and says where your files and the repository are.
 
 ## Where worktrees go
 

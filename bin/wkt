@@ -49,6 +49,8 @@ open as Herdr workspaces.
 Commands:
   setup <repo-url>                Clone <repo-url> into a .bare worktree layout
                                   in the current (empty) directory
+  adopt                           Turn the current clone into a .bare worktree
+                                  layout in place
   new -b <branch> [-s <source>] [-n <label>] [--no-herdr]
                                   Create or reopen the worktree for <branch>
                                   and open it in Herdr
@@ -73,6 +75,17 @@ Usage: $PROG setup <repo-url>
 
 Clone <repo-url> as a bare repository into ./.bare, point ./.git at it, and
 add a worktree for the default branch. The current directory must be empty.
+EOF
+}
+
+usage_adopt() {
+    cat <<EOF
+Usage: $PROG adopt
+
+Turn the normal clone you're in into a .bare layout, in place: .git becomes
+.bare, ./.git points at it, and the working tree moves into a worktree named
+after the current branch. Uncommitted, staged, untracked and ignored files
+move with it. Run it from the top of the clone.
 EOF
 }
 
@@ -286,6 +299,99 @@ cmd_setup() {
     fi
 
     print -r -- "${OUT_GREEN}✓${OUT_RESET} .bare worktree layout ready  ${OUT_BLUE}${default_branch}${OUT_RESET}"
+}
+
+cmd_adopt() {
+    wants_help "$@" && { usage_adopt; exit 0; }
+    if [[ $# -gt 0 ]]; then
+        [[ $1 == -* ]] && usage_error adopt "Unknown option: $1"
+        usage_error adopt "Unexpected argument: $1"
+    fi
+
+    git rev-parse --git-dir >/dev/null 2>&1 || die "Not inside a Git worktree."
+    [[ ${$(common_git_dir):t} != .bare ]] || die "This is already a .bare layout."
+    [[ "$(git rev-parse --is-inside-work-tree)" == true ]] || die "Not inside a Git worktree."
+
+    local root
+    root=$(git rev-parse --show-toplevel)
+    root=${root:A}
+    [[ ${PWD:A} == $root ]] ||
+        die "Run '$PROG adopt' from the top of the clone." "That's $(tildify "$root")."
+    [[ -d .git ]] ||
+        die "'.git' isn't a folder, so this is a linked worktree or a submodule." \
+            "Run '$PROG adopt' in the repository's main checkout."
+    [[ ! -e .bare ]] || die "'.bare' already exists."
+    [[ ! -e .gitmodules && ! -e .git/modules ]] ||
+        die "Repositories with submodules aren't supported."
+
+    local branch
+    branch=$(git branch --show-current)
+    [[ -n $branch ]] ||
+        die "Detached HEAD." "Check out a branch first; the worktree is named after it."
+    git rev-parse --verify --quiet HEAD >/dev/null || die "'$branch' has no commits yet."
+
+    local state
+    for state in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply sequencer; do
+        [[ ! -e .git/$state ]] ||
+            die "A merge, rebase, cherry-pick, revert or bisect is in progress." \
+                "Finish or abort it, then try again."
+    done
+
+    # Stage the working tree in a hidden folder first, so a top-level entry
+    # sharing the branch's name can't get in the way of the worktree path.
+    local stage="$root/.wkt-adopt.$$" wt_path="$root/$branch"
+    local files_at=$root repo_at="$root/.git"
+    trap 'print -ru2 -- "  adopt stopped partway; nothing was deleted. Your files are in $(tildify "$files_at"), the repository in $(tildify "$repo_at")."' ZERR
+
+    local -a entries=( *(DN) ) linked=() line
+    entries=( ${entries:#.git} )
+    for line in "${(@f)$(git worktree list --porcelain)}"; do
+        if [[ $line == "worktree "* && ${${line#worktree }:A} != $root ]]; then
+            linked+=("${line#worktree }")
+        fi
+    done
+
+    step "moving the working tree aside"
+    mkdir "$stage"
+    files_at=$stage
+    if (( ${#entries} )); then
+        mv -- "${entries[@]}" "$stage/"
+    fi
+
+    step "moving .git to .bare"
+    mv .git .bare
+    repo_at="$root/.bare"
+    print -r -- "gitdir: ./.bare" > .git
+    git config core.bare true
+
+    step "adding worktree for $branch"
+    git worktree add --quiet --no-checkout "$branch" "$branch"
+    mv "$wt_path/.git" "$stage/.git"
+    rmdir "$wt_path"
+    mv "$stage" "$wt_path"
+    files_at=$wt_path
+
+    # The old index carries what was staged; a fresh one would unstage it.
+    local wt_git_dir
+    wt_git_dir=$(git -C "$wt_path" rev-parse --absolute-git-dir)
+    if [[ -f .bare/index ]]; then
+        mv .bare/index "$wt_git_dir/index"
+    else
+        git -C "$wt_path" reset --quiet
+    fi
+    git -C "$wt_path" update-index -q --refresh >/dev/null 2>&1 || true
+
+    # Linked worktrees made before still point at .git. Repair also rewrites
+    # ./.git with an absolute path, so put the relative one back.
+    if (( ${#linked} )); then
+        git worktree repair "${linked[@]}" >/dev/null 2>&1 || true
+        print -r -- "gitdir: ./.bare" > .git
+    fi
+    trap - ZERR
+
+    print -r -- "${OUT_GREEN}✓${OUT_RESET} .bare worktree layout ready  ${OUT_BLUE}${branch}${OUT_RESET}"
+    print -r -- "${OUT_YELLOW}→${OUT_RESET} your files moved into ./$branch; run: cd ${(q-)branch}"
+    print -r -- "${OUT_YELLOW}→${OUT_RESET} editors and tools that remember absolute paths (direnv, mise trust) need the new folder"
 }
 
 cmd_new() {
@@ -534,6 +640,7 @@ cmd_rename() {
 
 case "${1-}" in
     setup ) shift; cmd_setup "$@" ;;
+    adopt ) shift; cmd_adopt "$@" ;;
     new ) shift; cmd_new "$@" ;;
     rename ) shift; cmd_rename "$@" ;;
     -h | --help | help ) usage ;;
