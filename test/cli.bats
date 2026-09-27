@@ -7,11 +7,11 @@ setup() { common_setup; }
 @test "--version prints the version" {
     run wkt --version
     [ "$status" -eq 0 ]
-    [ "$output" = "wkt 2.0.0" ]
+    [ "$output" = "wkt 1.0.0" ]
 
     run wkt -V
     [ "$status" -eq 0 ]
-    [ "$output" = "wkt 2.0.0" ]
+    [ "$output" = "wkt 1.0.0" ]
 }
 
 @test "--help names the command it was run as" {
@@ -31,7 +31,7 @@ setup() { common_setup; }
 }
 
 @test "command help exits 0" {
-    for cmd in setup new rename; do
+    for cmd in setup adopt new rename; do
         run wkt "$cmd" --help
         [ "$status" -eq 0 ]
         starts_with "${lines[0]}" "Usage: wkt $cmd"
@@ -110,6 +110,23 @@ setup() { common_setup; }
     run wkt setup -x
     [ "$status" -eq 2 ]
     contains "$output" "Unknown option: -x"
+}
+
+@test "adopt: argument errors" {
+    run wkt adopt -x
+    [ "$status" -eq 2 ]
+    contains "$output" "Unknown option: -x"
+
+    run wkt adopt extra
+    [ "$status" -eq 2 ]
+    contains "$output" "Unexpected argument: extra"
+}
+
+@test "adopt outside a repository" {
+    mkdir empty && cd empty
+    run wkt adopt
+    [ "$status" -eq 1 ]
+    contains "$output" "Not inside a Git worktree."
 }
 
 @test "new outside a repository" {

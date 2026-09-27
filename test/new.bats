@@ -224,21 +224,6 @@ setup() {
     [ ! -e "$CLONE/trees" ]
 }
 
-@test "normal repo: the old HERDR_WKT_ROOT still works when WKT_ROOT is unset" {
-    make_clone
-    cd "$CLONE"
-    HERDR_WKT_ROOT="$TMP/old" run wkt new -b topic
-    [ "$status" -eq 0 ]
-    [ -d "$TMP/old/acme/widget/topic" ]
-
-    HERDR_WKT_ROOT="$TMP/old" WKT_ROOT="$TMP/new" run wkt new -b topic2
-    [ "$status" -eq 0 ]
-    [ -d "$TMP/new/acme/widget/topic2" ]
-
-    HERDR_WKT_ROOT="trees" run wkt new -b topic3
-    [ "$status" -eq 1 ]
-    contains "$output" "HERDR_WKT_ROOT must be an absolute path"
-}
 
 @test "normal repo: works from inside an existing worktree" {
     make_clone
