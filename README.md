@@ -15,8 +15,6 @@ $ wkt new -b fix-login
 ✓ fix-login  ~/.herdr/worktrees/acme/widget/fix-login  opened in Herdr
 ```
 
-wkt was called herdr-wkt before 2.0.
-
 ## Why not `herdr worktree create`?
 
 Herdr can create worktrees itself, and wkt uses Herdr's `worktree open` to show them. The difference is what happens around the checkout:
@@ -165,7 +163,7 @@ wkt has no config file. It reads these environment variables:
 
 | Variable | Default | |
 |---|---|---|
-| `WKT_ROOT` | `~/.herdr/worktrees` | Where worktrees of normal clones go. Must be absolute; a leading `~` is expanded. The pre-2.0 name, `HERDR_WKT_ROOT`, is still read when `WKT_ROOT` is unset |
+| `WKT_ROOT` | `~/.herdr/worktrees` | Where worktrees of normal clones go. Must be absolute; a leading `~` is expanded. |
 | `HERDR_TAB_ID` | *(set by Herdr)* | Its presence means wkt is running inside Herdr, so it opens worktrees there |
 | `NO_COLOR` | *(unset)* | Set to anything to turn off coloured output. Output is plain whenever it isn't going to a terminal |
 
