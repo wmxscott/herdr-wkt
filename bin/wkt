@@ -1,11 +1,11 @@
 #!/usr/bin/env zsh
-# herdr-wkt: git worktrees that open as Herdr workspaces.
-# https://github.com/wmxscott/herdr-wkt
+# wkt: git worktrees in a .bare layout, opened as Herdr workspaces inside Herdr.
+# https://github.com/wmxscott/wkt
 
 emulate -R zsh
 setopt err_exit pipe_fail
 
-VERSION=1.0.0
+VERSION=2.0.0
 PROG=${0:t}
 
 typeset -g OUT_GREEN= OUT_BLUE= OUT_YELLOW= OUT_RESET=
@@ -43,15 +43,16 @@ usage() {
     cat <<EOF
 Usage: $PROG <command> [options]
 
-Git worktrees that open as Herdr workspaces.
+Git worktrees in a .bare layout. Inside Herdr, new and renamed worktrees
+open as Herdr workspaces.
 
 Commands:
   setup <repo-url>                Clone <repo-url> into a .bare worktree layout
                                   in the current (empty) directory
-  new -b <branch> [-s <source>] [-n <label>]
+  new -b <branch> [-s <source>] [-n <label>] [--no-herdr]
                                   Create or reopen the worktree for <branch>
                                   and open it in Herdr
-  rename -b <new-branch> [-n <label>] [-y]
+  rename -b <new-branch> [-n <label>] [-y] [--no-herdr]
                                   Rename the current worktree's branch,
                                   directory and Herdr workspace
 
@@ -60,7 +61,7 @@ Options:
   -V, --version                   Show the version
 
 Environment:
-  HERDR_WKT_ROOT                  Where worktrees of normal (non-.bare) repos
+  WKT_ROOT                        Where worktrees of normal (non-.bare) repos
                                   go (default: ~/.herdr/worktrees)
   NO_COLOR                        Disable coloured output
 EOF
@@ -77,34 +78,36 @@ EOF
 
 usage_new() {
     cat <<EOF
-Usage: $PROG new -b <branch> [-s <source>] [-n <label>]
+Usage: $PROG new -b <branch> [-s <source>] [-n <label>] [--no-herdr]
 
 Create the worktree for <branch>, or reuse it if it exists, and open it in
-Herdr. A new branch is created from <source> unless it already exists locally
-or on origin.
+Herdr when run inside Herdr. A new branch is created from <source> unless it
+already exists locally or on origin.
 
 Options:
   -b <branch>   Branch to create or open; also the worktree directory name
   -s <source>   Branch to start a new branch from (default: the repo's
                 default branch)
   -n <label>    Herdr workspace label (default: chosen by Herdr)
+  --no-herdr    Don't open the worktree in Herdr
   -h, --help    Show this help
 EOF
 }
 
 usage_rename() {
     cat <<EOF
-Usage: $PROG rename -b <new-branch> [-n <label>] [-y]
+Usage: $PROG rename -b <new-branch> [-n <label>] [-y] [--no-herdr]
 
 Rename the current worktree's branch and directory, rename the branch on
-origin if it was pushed, and point the Herdr workspace at the new path.
-Run it from inside a linked worktree.
+origin if it was pushed, and, inside Herdr, point the Herdr workspace at the
+new path. Run it from inside a linked worktree.
 
 Options:
   -b <new-branch>  New branch name; also the new directory name
   -n <label>       Herdr workspace label (default: the new branch name)
   -y               Don't ask before renaming a remote branch that has an
                    open pull request
+  --no-herdr       Leave the Herdr workspace alone
   -h, --help       Show this help
 EOF
 }
@@ -116,6 +119,22 @@ wants_help() {
         [[ $arg == --help ]] && return 0
     done
     return 1
+}
+
+# take_no_herdr <args...>: set NO_HERDR if --no-herdr is among the arguments
+# and leave the rest in ARGS.
+typeset -g NO_HERDR=0
+typeset -ga ARGS
+take_no_herdr() {
+    ARGS=()
+    local arg
+    for arg in "$@"; do
+        if [[ $arg == --no-herdr ]]; then
+            NO_HERDR=1
+        else
+            ARGS+=("$arg")
+        fi
+    done
 }
 
 # Print $1 relative to $2 (both resolved to absolute paths first).
@@ -203,16 +222,21 @@ is_worktree() {
 
 # The root that worktrees of normal repos live under.
 worktree_root() {
-    local root=${HERDR_WKT_ROOT:-$HOME/.herdr/worktrees}
+    local var=WKT_ROOT
+    [[ -z ${WKT_ROOT-} && -n ${HERDR_WKT_ROOT-} ]] && var=HERDR_WKT_ROOT
+    local root=${${(P)var}:-$HOME/.herdr/worktrees}
     root=${root/#\~/$HOME}
-    [[ $root == /* ]] || die "HERDR_WKT_ROOT must be an absolute path, not '$HERDR_WKT_ROOT'."
+    [[ $root == /* ]] || die "$var must be an absolute path, not '${(P)var}'."
     print -r -- "${root%/}"
 }
 
 # herdr_open <repo-git-dir> <worktree-path> [<label>]
-# Open the worktree as a Herdr workspace. The git work is already done, so a
-# missing or unreachable Herdr only warns; the status says whether it opened.
+# Open the worktree as a Herdr workspace, only when running inside Herdr and
+# not told --no-herdr. The git work is already done, so a missing or
+# unreachable Herdr only warns; the status says whether it opened.
 herdr_open() {
+    (( ! NO_HERDR )) && [[ -n ${HERDR_TAB_ID-} ]] || return 1
+
     local repo_dir=$1 wt_path=$2 label=${3-}
     local -a args=(worktree open --cwd "$repo_dir" --path "$wt_path")
     [[ -n "$label" ]] && args+=(--label "$label")
@@ -266,6 +290,8 @@ cmd_setup() {
 
 cmd_new() {
     wants_help "$@" && { usage_new; exit 0; }
+    take_no_herdr "$@"
+    set -- "${ARGS[@]}"
     local new_branch="" source_branch="" label="" opt
     local OPTIND=1 OPTARG
     while getopts ":b:s:n:h" opt; do
@@ -373,6 +399,8 @@ cmd_new() {
 
 cmd_rename() {
     wants_help "$@" && { usage_rename; exit 0; }
+    take_no_herdr "$@"
+    set -- "${ARGS[@]}"
     local new_branch="" new_label="" auto_yes=0 opt
     local OPTIND=1 OPTARG
     while getopts ":b:n:yh" opt; do
@@ -509,7 +537,7 @@ case "${1-}" in
     new ) shift; cmd_new "$@" ;;
     rename ) shift; cmd_rename "$@" ;;
     -h | --help | help ) usage ;;
-    -V | --version ) print -r -- "herdr-wkt $VERSION" ;;
+    -V | --version ) print -r -- "wkt $VERSION" ;;
     "" ) usage >&2; exit 2 ;;
     -* ) usage_error "" "Unknown option: $1" ;;
     * ) usage_error "" "Unknown command: $1" ;;

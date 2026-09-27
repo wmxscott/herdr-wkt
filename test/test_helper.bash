@@ -2,10 +2,12 @@
 # Shared setup: every test runs in its own temp dir with a scrubbed
 # environment, a throwaway HOME and git config, and stub herdr and gh
 # commands, so nothing touches a real Herdr session, GitHub or your repos.
+# HERDR_TAB_ID is set to a dummy value so wkt behaves as if inside Herdr;
+# tests of the outside-Herdr path unset it.
 
 bats_require_minimum_version 1.5.0
 
-SCRIPT="$(cd "$BATS_TEST_DIRNAME/.." && pwd -P)/bin/herdr-wkt"
+SCRIPT="$(cd "$BATS_TEST_DIRNAME/.." && pwd -P)/bin/wkt"
 
 common_setup() {
     local name
@@ -34,13 +36,13 @@ EOF
 
     STUB_BIN="$TMP/bin"
     mkdir -p "$STUB_BIN"
-    ln -s "$SCRIPT" "$STUB_BIN/herdr-wkt"
-    ln -s herdr-wkt "$STUB_BIN/wkt"
+    ln -s "$SCRIPT" "$STUB_BIN/wkt"
+    export HERDR_TAB_ID=stub-tab
 
     export STUB_HERDR_LOG="$TMP/herdr.log"
     cat >"$STUB_BIN/herdr" <<'EOF'
 #!/bin/bash
-if env | grep -q '^HERDR_'; then
+if env | grep '^HERDR_' | grep -qvx 'HERDR_TAB_ID=stub-tab'; then
     echo "stub herdr: HERDR_* leaked into the environment" >&2
     exit 99
 fi
@@ -94,7 +96,7 @@ make_origin() {
 make_layout() {
     LAYOUT="$TMP/layout"
     mkdir -p "$LAYOUT"
-    (cd "$LAYOUT" && herdr-wkt setup "$ORIGIN") >/dev/null 2>&1
+    (cd "$LAYOUT" && wkt setup "$ORIGIN") >/dev/null 2>&1
 }
 
 # make_clone: a normal clone of $ORIGIN at $CLONE.

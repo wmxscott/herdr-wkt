@@ -4,33 +4,33 @@ load test_helper
 
 setup() { common_setup; }
 
-@test "--version prints the canonical name under either name" {
-    run herdr-wkt --version
+@test "--version prints the version" {
+    run wkt --version
     [ "$status" -eq 0 ]
-    [ "$output" = "herdr-wkt 1.0.0" ]
+    [ "$output" = "wkt 2.0.0" ]
 
     run wkt -V
     [ "$status" -eq 0 ]
-    [ "$output" = "herdr-wkt 1.0.0" ]
+    [ "$output" = "wkt 2.0.0" ]
 }
 
 @test "--help names the command it was run as" {
-    run herdr-wkt --help
+    ln -s wkt "$STUB_BIN/tree"
+    run tree --help
     [ "$status" -eq 0 ]
-    [ "${lines[0]}" = "Usage: herdr-wkt <command> [options]" ]
-    contains "$output" "HERDR_WKT_ROOT"
+    [ "${lines[0]}" = "Usage: tree <command> [options]" ]
+    contains "$output" "WKT_ROOT"
 
     run wkt -h
     [ "$status" -eq 0 ]
     [ "${lines[0]}" = "Usage: wkt <command> [options]" ]
-    lacks "$output" "herdr-wkt <command>"
 
     run wkt help
     [ "$status" -eq 0 ]
     [ "${lines[0]}" = "Usage: wkt <command> [options]" ]
 }
 
-@test "command help exits 0 and uses the alias name" {
+@test "command help exits 0" {
     for cmd in setup new rename; do
         run wkt "$cmd" --help
         [ "$status" -eq 0 ]
@@ -41,16 +41,16 @@ setup() { common_setup; }
     starts_with "${lines[0]}" "Usage: wkt new"
 }
 
-@test "errors point at help under the alias name" {
+@test "errors point at help" {
     run wkt new
     [ "$status" -eq 2 ]
     contains "$output" "Branch name (-b) is required."
     contains "$output" "Run 'wkt new --help' for usage."
 
-    run herdr-wkt bogus
+    run wkt bogus
     [ "$status" -eq 2 ]
     contains "$output" "Unknown command: bogus"
-    contains "$output" "Run 'herdr-wkt --help' for usage."
+    contains "$output" "Run 'wkt --help' for usage."
 }
 
 @test "no arguments prints usage to stderr and exits 2" {
